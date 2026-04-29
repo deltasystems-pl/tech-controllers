@@ -21,6 +21,8 @@ from .const import (
     CONTROLLER,
     DOMAIN,
     MANUFACTURER,
+    MENU_DEPTH_DEFAULT_ENABLED_LIMIT,
+    MENU_DEPTH_REGISTRATION_LIMIT,
     MENU_ITEM_TYPE_DIALOGUE,
     UDID,
 )
@@ -50,10 +52,15 @@ async def async_setup_entry(
     zones = await coordinator.api.get_module_zones(controller_udid)
     group_names = assets.build_menu_group_names(menus)
     zone_assignments = assets.build_menu_zone_assignments(menus, zones)
+    depths = assets.compute_menu_depths(menus)
 
     entities: list[MenuButtonEntity] = []
     for key, item in menus.items():
         if item.get("type") != MENU_ITEM_TYPE_DIALOGUE:
+            continue
+        # Skip items deeper than the registration limit -- L-12 has 600+
+        # DIALOGUE items, mostly per-zone "reset to factory" buttons.
+        if depths[key] > MENU_DEPTH_REGISTRATION_LIMIT:
             continue
         entities.append(
             MenuButtonEntity(
@@ -62,6 +69,7 @@ async def async_setup_entry(
                 coordinator,
                 config_entry,
                 group_names,
+                depth=depths[key],
                 zone_id=zone_assignments.get(key),
             )
         )
@@ -82,6 +90,7 @@ class MenuButtonEntity(CoordinatorEntity, ButtonEntity):
         coordinator: TechCoordinator,
         config_entry: ConfigEntry,
         group_names: dict[tuple[str, int], str],
+        depth: int = 0,
         zone_id: int | None = None,
     ) -> None:
         """Initialise a menu button entity.
@@ -92,6 +101,8 @@ class MenuButtonEntity(CoordinatorEntity, ButtonEntity):
             coordinator: Shared Tech data coordinator instance.
             config_entry: Config entry that owns the coordinator.
             group_names: Mapping of ``(menu_type, group_id)`` to group label.
+            depth: Nesting depth of this item in the Tech menu tree
+                (0 = top-level). Drives ``entity_registry_enabled_default``.
             zone_id: Optional zone ID to associate this entity with a zone device.
 
         """
@@ -110,7 +121,7 @@ class MenuButtonEntity(CoordinatorEntity, ButtonEntity):
         # entity name itself is the menu label only.
         self._name = assets.menu_entity_name(item, group_names, "")
 
-        self._disabled = item.get("parentId", 0) != 0
+        self._disabled = depth > MENU_DEPTH_DEFAULT_ENABLED_LIMIT
 
         self._update_from_item(item)
 

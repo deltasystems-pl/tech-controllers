@@ -21,6 +21,8 @@ from .const import (
     CONTROLLER,
     DOMAIN,
     MANUFACTURER,
+    MENU_DEPTH_DEFAULT_ENABLED_LIMIT,
+    MENU_DEPTH_REGISTRATION_LIMIT,
     MENU_ITEM_TYPE_UNIVERSAL_VALUE,
     MENU_ITEM_TYPE_VALUE,
     UDID,
@@ -54,6 +56,7 @@ async def async_setup_entry(
     zones = await coordinator.api.get_module_zones(controller_udid)
     group_names = assets.build_menu_group_names(menus)
     zone_assignments = assets.build_menu_zone_assignments(menus, zones)
+    depths = assets.compute_menu_depths(menus)
 
     entities: list[MenuNumberEntity] = []
     for key, item in menus.items():
@@ -62,6 +65,10 @@ async def async_setup_entry(
             continue
         if not item.get("access", False):
             continue
+        # Skip items deeper than the registration limit -- L-12 has 1100+
+        # numeric items, mostly deeply nested per-zone configuration.
+        if depths[key] > MENU_DEPTH_REGISTRATION_LIMIT:
+            continue
         entities.append(
             MenuNumberEntity(
                 item,
@@ -69,6 +76,7 @@ async def async_setup_entry(
                 coordinator,
                 config_entry,
                 group_names,
+                depth=depths[key],
                 zone_id=zone_assignments.get(key),
             )
         )
@@ -89,6 +97,7 @@ class MenuNumberEntity(CoordinatorEntity, NumberEntity):
         coordinator: TechCoordinator,
         config_entry: ConfigEntry,
         group_names: dict[tuple[str, int], str],
+        depth: int = 0,
         zone_id: int | None = None,
     ) -> None:
         """Initialise a menu number entity.
@@ -99,6 +108,8 @@ class MenuNumberEntity(CoordinatorEntity, NumberEntity):
             coordinator: Shared Tech data coordinator instance.
             config_entry: Config entry that owns the coordinator.
             group_names: Mapping of ``(menu_type, group_id)`` to group label.
+            depth: Nesting depth of this item in the Tech menu tree
+                (0 = top-level). Drives ``entity_registry_enabled_default``.
             zone_id: Optional zone ID to associate this entity with a zone device.
 
         """
@@ -122,7 +133,7 @@ class MenuNumberEntity(CoordinatorEntity, NumberEntity):
         # entity name itself is the menu label only.
         self._name = assets.menu_entity_name(item, group_names, "")
 
-        self._disabled = item.get("parentId", 0) != 0
+        self._disabled = depth > MENU_DEPTH_DEFAULT_ENABLED_LIMIT
 
         self._update_from_item(item)
 
